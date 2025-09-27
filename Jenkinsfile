@@ -1,34 +1,33 @@
 pipeline {
-    agent any
+    agent {
+        docker { image 'node:16' }
+    }
 
     environment {
-        DOCKER_IMAGE = "abeerasheikh/my-node-app" // change if needed
+        DOCKER_REGISTRY = 'your-dockerhub-username'
+        IMAGE_NAME = 'node-app'
     }
 
     stages {
         stage('Install Dependencies') {
             steps {
-                // Run npm install inside a Node 16 container
-                sh 'docker run --rm -v $PWD:/app -w /app node:16 npm install --save'
+                sh 'npm install --save'
             }
         }
 
         stage('Run Tests') {
             steps {
-                // Run tests inside Node 16 container
-                sh 'docker run --rm -v $PWD:/app -w /app node:16 npm test'
+                sh 'npm test'
             }
         }
 
-        stage('Security Scan with Snyk') {
+        stage('Security Scan') {
             steps {
-                withCredentials([string(credentialsId: '6407896b-2168-48c1-8346-53ccc219e856', variable: 'SNYK_TOKEN')]) {
-                    // Run Snyk scan inside Node 16 container
+                withCredentials([string(credentialsId: 'SNYK_TOKEN_ID', variable: 'SNYK_TOKEN')]) {
                     sh '''
-                        docker run --rm -v $PWD:/app -w /app node:16 sh -c "
-                        npm install -g snyk && \
-                        snyk auth $SNYK_TOKEN && \
-                        snyk test --severity-threshold=high || exit 1"
+                        npm install -g snyk
+                        snyk auth $SNYK_TOKEN
+                        snyk test --severity-threshold=high || exit 1
                     '''
                 }
             }
@@ -36,17 +35,16 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                // Build Docker image using DinD
-                sh 'docker build -t $DOCKER_IMAGE:$BUILD_NUMBER .'
+                sh 'docker build -t $DOCKER_REGISTRY/$IMAGE_NAME:$BUILD_NUMBER .'
             }
         }
 
         stage('Push Docker Image') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'ec2f6674-297e-4506-a79b-5a8ba437edfd', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                withCredentials([usernamePassword(credentialsId: 'DOCKERHUB_CREDS', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     sh '''
                         echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                        docker push $DOCKER_IMAGE:$BUILD_NUMBER
+                        docker push $DOCKER_REGISTRY/$IMAGE_NAME:$BUILD_NUMBER
                     '''
                 }
             }
