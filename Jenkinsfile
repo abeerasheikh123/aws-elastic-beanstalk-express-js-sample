@@ -38,7 +38,7 @@ pipeline {
     }
 
     stage('Dependency Vulnerability Scan - OWASP Dependency-Check') {
-      agent { label 'master' } // run on Jenkins master (it has docker CLI configured to use DinD)
+      agent any
       steps {
         sh '''
           echo "Running OWASP Dependency-Check (docker image)..."
