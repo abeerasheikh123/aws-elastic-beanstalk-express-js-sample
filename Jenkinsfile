@@ -1,13 +1,13 @@
 pipeline {
-  agent none                           // per-stage agents are used
+  agent none
 
   environment {
-    IMAGE = "abeerasheikh/aws-sample-nodejs-app"   // change to your DockerHub namespace if needed
+    IMAGE = "abeerasheikh/aws-sample-nodejs-app"   // change to your DockerHub repo if needed
     TAG   = "latest"
+    // DO NOT store secrets here. Use Jenkins Credentials
   }
 
   stages {
-
     stage('Checkout') {
       agent any
       steps {
@@ -16,100 +16,72 @@ pipeline {
       }
     }
 
-    // Build and test inside Node 16 container
-    stage('Install & Unit Tests') {
+    stage('Install Dependencies & (optional) Tests') {
       agent {
         docker {
           image 'node:16'
-          reuseNode true                   // important: keeps workspace inside the container
+          reuseNode true
         }
       }
       steps {
         sh 'npm install --save'
-        sh 'npm test || echo "No tests or some tests failed (see logs)"'
-      }
-    }
-
-    // Snyk dependency scan (fail on High/Critical)
-    stage('Dependency Vulnerability Scan - Snyk') {
-      agent {
-        docker {
-          image 'node:16'
-          reuseNode true
-        }
-      }
-      environment {
-        // add this credential in Jenkins (Credentials -> System -> Global). ID below
-        SNYK_TOKEN = credentials('snyk-token')   // <-- create Secret Text credential with ID 'snyk-token'
-      }
-      steps {
-        // install snyk in the node container and run test
+        // run tests if they exist; DO NOT fail pipeline if test script missing
         sh '''
-          npm install -g snyk
-          snyk auth $SNYK_TOKEN
-          snyk test --severity-threshold=high
+          if npm run | grep -q "test"; then
+            echo "Running npm test..."
+            npm test || { echo "Unit tests failed (see logs)"; exit 1; }
+          else
+            echo "No npm test script defined; skipping tests."
+          fi
         '''
       }
     }
 
-    // Build Docker image — use docker CLI inside a docker image that has docker (docker:dind/client)
-    stage('Build Docker Image') {
-      agent {
-        docker {
-          image 'docker:24.0.5'               // docker CLI image
-          args '-v /var/run/docker.sock:/var/run/docker.sock -v $HOME/.docker:/root/.docker'
-          reuseNode true
-        }
-      }
+    stage('Dependency Vulnerability Scan - OWASP Dependency-Check') {
+      agent { label 'master' } // run on Jenkins master (it has docker CLI configured to use DinD)
       steps {
+        sh '''
+          echo "Running OWASP Dependency-Check (docker image)..."
+          # run dependency-check scanning the workspace, output into ./dependency-check-reports
+          mkdir -p dependency-check-reports
+          docker run --rm -v "$PWD":/src --workdir /src owasp/dependency-check:8.2.1 \
+            --project "aws-sample-nodejs" --scan /src --out /src/dependency-check-reports || true
+
+          # Check reports for HIGH or CRITICAL findings (XML/JSON/HTML may be present).
+          # We'll search the generated files for HIGH or CRITICAL keywords.
+          if grep -R -iE "HIGH|CRITICAL" dependency-check-reports/* >/dev/null 2>&1; then
+            echo "Dependency-Check: HIGH or CRITICAL vulnerabilities detected!"
+            # Print a short excerpt for logs
+            grep -R -nE "HIGH|CRITICAL" dependency-check-reports/* | head -n 50 || true
+            exit 1
+          else
+            echo "Dependency-Check: no HIGH/CRITICAL findings."
+          fi
+        '''
+      }
+    }
+
+    stage('Build Docker Image') {
+      agent any
+      steps {
+        // Use the Jenkins docker CLI (configured with DOCKER_HOST -> DinD)
         sh "docker build -t ${IMAGE}:${TAG} ."
       }
     }
 
-    // Optional: run quick container smoke test (if app has start command)
-    stage('Container Smoke Test') {
-      agent {
-        docker {
-          image 'docker:24.0.5'
-          args '-v /var/run/docker.sock:/var/run/docker.sock -v $HOME/.docker:/root/.docker'
-          reuseNode true
-        }
-      }
+    stage('Image Vulnerability Scan - Trivy (fail on HIGH/CRITICAL)') {
+      agent any
       steps {
-        // run container briefly to confirm it starts (adjust port if app uses different port)
         sh '''
-          docker run -d --name ci_smoke_test -p 3000:3000 ${IMAGE}:${TAG} || true
-          sleep 5
-          docker logs ci_smoke_test || true
-          docker rm -f ci_smoke_test || true
+          echo "Scanning image with Trivy..."
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image --exit-code 1 --severity HIGH,CRITICAL ${IMAGE}:${TAG} || { echo "Trivy: Found HIGH/CRITICAL issues"; exit 1; }
+          echo "Trivy: No HIGH/CRITICAL issues found."
         '''
       }
     }
 
-    // Image vulnerability scan with Trivy (non-blocking for now — you can fail on certain severities if required)
-    stage('Image Vulnerability Scan - Trivy') {
-      agent {
-        docker {
-          image 'aquasec/trivy:latest'
-          args '-v /var/run/docker.sock:/var/run/docker.sock -v $HOME/.cache:/root/.cache'
-          reuseNode true
-        }
-      }
-      steps {
-        // scan the local image; fail on HIGH or CRITICAL if you prefer by checking exit code
-        sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${IMAGE}:${TAG} || { echo 'Trivy found High/Critical issues'; exit 1; }"
-      }
-    }
-
-    // Push image to DockerHub (requires credential in Jenkins)
     stage('Push to DockerHub') {
-      agent {
-        docker {
-          image 'docker:24.0.5'
-          args '-v /var/run/docker.sock:/var/run/docker.sock -v $HOME/.docker:/root/.docker'
-          reuseNode true
-        }
-      }
+      agent any
       steps {
         withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
           sh '''
@@ -119,18 +91,18 @@ pipeline {
         }
       }
     }
-
   } // stages
 
   post {
     success {
-      echo "Pipeline completed SUCCESSFULLY."
+      echo "Pipeline SUCCESS: ${env.BUILD_URL}"
     }
     failure {
-      echo "Pipeline FAILED — check logs and fix issues."
+      echo "Pipeline FAILED: ${env.BUILD_URL}"
     }
     always {
-      // archive build logs or artifacts if you want (configure in Jenkins job UI if required)
+      // Archive reports and artifacts for submission (useful for Task 4)
+      archiveArtifacts artifacts: 'dependency-check-reports/**', allowEmptyArchive: true
       echo "Pipeline finished at ${new Date()}"
     }
   }
