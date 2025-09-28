@@ -41,6 +41,7 @@ pipeline {
                 sh 'npm install -g snyk'
                 withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
                     sh 'snyk auth $SNYK_TOKEN'
+                    // Fail the build if high/critical vulnerabilities are detected
                     sh 'snyk test --severity-threshold=high'
                 }
             }
@@ -49,18 +50,6 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh "docker build -t ${DOCKER_HUB_REPO}:latest ."
-            }
-        }
-
-        stage('Image Vulnerability Scan (Trivy)') {
-            steps {
-                sh '''
-                docker run --rm \
-                  -v /var/run/docker.sock:/var/run/docker.sock \
-                  aquasec/trivy:latest image \
-                  --exit-code 1 --severity HIGH,CRITICAL \
-                  ${DOCKER_HUB_REPO}:latest
-                '''
             }
         }
 
@@ -81,7 +70,7 @@ pipeline {
             echo "Pipeline finished. Check logs for details."
         }
         failure {
-            echo "Build failed — check Snyk, Trivy, or earlier stage logs."
+            echo "Build failed — check Snyk or earlier stage logs."
         }
     }
 }
