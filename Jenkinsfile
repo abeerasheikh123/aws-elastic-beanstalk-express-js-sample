@@ -41,7 +41,7 @@ pipeline {
                 sh 'npm install -g snyk'
                 withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
                     sh 'snyk auth $SNYK_TOKEN'
-                    sh 'snyk test --severity-threshold=high --fail-on=upgradable'
+                    sh 'snyk test --severity-threshold=high'
                 }
             }
         }
