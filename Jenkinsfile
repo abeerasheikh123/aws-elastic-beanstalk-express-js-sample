@@ -1,10 +1,5 @@
 pipeline {
-    agent {
-        docker {
-            image 'node:16'
-            args '-v /var/run/docker.sock:/var/run/docker.sock' // allow docker build inside
-        }
-    }
+    agent any   // Default agent (has Docker CLI)
 
     environment {
         DOCKER_HUB_REPO = "abeerasheikh/aws-sample-nodejs-app"
@@ -18,7 +13,12 @@ pipeline {
             }
         }
 
-        stage('Install Dependencies & Test') {
+        stage('Install Dependencies & Test (Node 16)') {
+            agent {
+                docker {
+                    image 'node:16'
+                }
+            }
             steps {
                 sh 'npm install --save'
                 sh '''
@@ -28,6 +28,21 @@ pipeline {
                   echo "No npm test script defined; skipping tests."
                 fi
                 '''
+            }
+        }
+
+        stage('Dependency Vulnerability Scan (Snyk)') {
+            agent {
+                docker {
+                    image 'node:16'
+                }
+            }
+            steps {
+                sh 'npm install -g snyk'
+                withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+                    sh 'snyk auth $SNYK_TOKEN'
+                    sh 'snyk test --severity-threshold=high --fail-on=upgradable'
+                }
             }
         }
 
@@ -66,7 +81,7 @@ pipeline {
             echo "Pipeline finished. Check logs for details."
         }
         failure {
-            echo "Build failed — check Trivy scan or earlier stage logs."
+            echo "Build failed — check Snyk, Trivy, or earlier stage logs."
         }
     }
 }
