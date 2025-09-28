@@ -1,5 +1,10 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'node:16'
+            args '-v /var/run/docker.sock:/var/run/docker.sock' // allow docker build inside
+        }
+    }
 
     environment {
         DOCKER_HUB_REPO = "abeerasheikh/aws-sample-nodejs-app"
@@ -13,21 +18,16 @@ pipeline {
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Install Dependencies & Test') {
             steps {
-                script {
-                    docker.image('node:16').inside {
-                        sh 'npm install --save'
-                        // skip test if not defined
-                        sh '''
-                        if npm run | grep -q "test"; then
-                          npm test
-                        else
-                          echo "No npm test script defined; skipping tests."
-                        fi
-                        '''
-                    }
-                }
+                sh 'npm install --save'
+                sh '''
+                if npm run | grep -q "test"; then
+                  npm test
+                else
+                  echo "No npm test script defined; skipping tests."
+                fi
+                '''
             }
         }
 
@@ -42,7 +42,9 @@ pipeline {
                 sh '''
                 docker run --rm \
                   -v /var/run/docker.sock:/var/run/docker.sock \
-                  aquasec/trivy:latest image --exit-code 0 --severity MEDIUM,HIGH,CRITICAL ${DOCKER_HUB_REPO}:latest
+                  aquasec/trivy:latest image \
+                  --exit-code 1 --severity HIGH,CRITICAL \
+                  ${DOCKER_HUB_REPO}:latest
                 '''
             }
         }
@@ -62,6 +64,9 @@ pipeline {
     post {
         always {
             echo "Pipeline finished. Check logs for details."
+        }
+        failure {
+            echo "Build failed — check Trivy scan or earlier stage logs."
         }
     }
 }
